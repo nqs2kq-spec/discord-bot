@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
+from datetime import datetime, timedelta
 
 # =========================
 # ログ
@@ -17,19 +18,20 @@ logger = logging.getLogger("bot")
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 # =========================
-# データ管理
+# データ
 # =========================
 DATA_FILE = "reservations.json"
 
 TYPES = ["建築", "訓練", "研究"]
 
-# 9:00〜翌8:30（30分刻み）
-from datetime import datetime, timedelta
-
 TIME_SLOTS = []
+
 start = datetime.strptime("09:00", "%H:%M")
 end = start + timedelta(days=1)
 
@@ -39,14 +41,21 @@ while start < end:
 
 
 def load_data():
+
     if not os.path.exists(DATA_FILE):
-        return {t: {} for t in TYPES}
+        data = {t: {} for t in TYPES}
+
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return data
 
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_data(data):
+
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -58,40 +67,75 @@ reservations = load_data()
 # =========================
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        logger.error(e)
+
     logger.info(f"Logged in as {bot.user}")
 
+
 # =========================
-# /yoyaku（安定入力型）
+# /yoyaku
 # =========================
 @app_commands.describe(
     type="建築 / 訓練 / 研究",
-    game_account_name="ゲーム名",
+    game_account_name="ゲーム内名前",
     alliance_tag="同盟タグ",
-    reserve_time="時間（例 09:30）"
+    reserve_time="予約時間（例 09:30）"
 )
+@app_commands.choices(type=[
+    app_commands.Choice(name="建築", value="建築"),
+    app_commands.Choice(name="訓練", value="訓練"),
+    app_commands.Choice(name="研究", value="研究"),
+])
 @bot.tree.command(name="yoyaku", description="官職予約")
 async def yoyaku(
     interaction: discord.Interaction,
-    type: str,
+    type: app_commands.Choice[str],
     game_account_name: str,
     alliance_tag: str,
     reserve_time: str
 ):
 
-    if type not in TYPES:
-        await interaction.response.send_message("タイプエラー", ephemeral=True)
-        return
+    reserve_type = type.value
 
+    # 時間チェック
     if reserve_time not in TIME_SLOTS:
-        await interaction.response.send_message("時間が不正です", ephemeral=True)
+
+        await interaction.response.send_message(
+            "30分刻み・09:00〜翌08:30 で入力してください",
+            ephemeral=True
+        )
         return
 
-    if reserve_time in reservations[type]:
-        await interaction.response.send_message("その時間は予約済みです", ephemeral=True)
+    # 同タイプ重複防止
+    for slot, d in reservations[reserve_type].items():
+
+        if d["discord_id"] == interaction.user.id:
+
+            await interaction.response.send_message(
+                f"あなたは既に {reserve_type} を予約しています",
+                ephemeral=True
+            )
+            return
+
+    # 時間重複防止
+    if reserve_time in reservations[reserve_type]:
+
+        d = reservations[reserve_type][reserve_time]
+
+        await interaction.response.send_message(
+            f"その時間は予約済みです\n"
+            f"[{d['tag']}] {d['name']}",
+            ephemeral=True
+        )
         return
 
-    reservations[type][reserve_time] = {
+    # 登録
+    reservations[reserve_type][reserve_time] = {
         "name": game_account_name,
         "tag": alliance_tag,
         "discord_id": interaction.user.id
@@ -100,12 +144,15 @@ async def yoyaku(
     save_data(reservations)
 
     await interaction.response.send_message(
-        f"✅ {type} {reserve_time} 予約完了\n[{alliance_tag}] {game_account_name}",
+        f"✅ 予約完了\n"
+        f"{reserve_type} {reserve_time}\n"
+        f"[{alliance_tag}] {game_account_name}",
         ephemeral=True
     )
 
+
 # =========================
-# /list（全時間表示）
+# /list
 # =========================
 @app_commands.choices(type=[
     app_commands.Choice(name="建築", value="建築"),
@@ -113,85 +160,195 @@ async def yoyaku(
     app_commands.Choice(name="研究", value="研究"),
 ])
 @bot.tree.command(name="list", description="予約一覧")
-async def list_cmd(interaction: discord.Interaction, type: app_commands.Choice[str]):
+async def list_cmd(
+    interaction: discord.Interaction,
+    type: app_commands.Choice[str]
+):
 
-    data = reservations[type.value]
-    text = f"【{type.value} 予約一覧】\n\n"
+    reserve_type = type.value
+
+    text = f"【{reserve_type} 予約一覧】\n\n"
 
     for slot in TIME_SLOTS:
-        if slot in data:
-            d = data[slot]
-            text += f"❌ {slot} - [{d['tag']}] {d['name']}\n"
+
+        if slot in reservations[reserve_type]:
+
+            d = reservations[reserve_type][slot]
+
+            text += (
+                f"❌ {slot} - "
+                f"[{d['tag']}] {d['name']}\n"
+            )
+
         else:
             text += f"🟢 {slot}\n"
 
-    await interaction.response.send_message(text, ephemeral=False)
+    await interaction.response.send_message(
+        text,
+        ephemeral=False
+    )
+
 
 # =========================
-# /mylist（自分だけ）
+# /mylist
 # =========================
-@bot.tree.command(name="mylist", description="自分の予約")
+@bot.tree.command(name="mylist", description="自分の予約一覧")
 async def mylist(interaction: discord.Interaction):
 
     uid = interaction.user.id
+
+    icons = {
+        "建築": "🏗",
+        "訓練": "⚔",
+        "研究": "🧪"
+    }
+
     text = "【あなたの予約】\n\n"
 
+    found = False
+
     for t in TYPES:
+
         for slot, d in reservations[t].items():
 
             if d["discord_id"] == uid:
-                text += f"⭐ {slot} - [{d['tag']}] {d['name']}\n"
-            else:
-                text += f"{slot} - [{d['tag']}] {d['name']}\n"
 
-    await interaction.response.send_message(text, ephemeral=True)
+                text += (
+                    f"{icons[t]} "
+                    f"{t} {slot} - "
+                    f"[{d['tag']}] {d['name']}\n"
+                )
+
+                found = True
+
+    if not found:
+        text = "現在予約はありません"
+
+    await interaction.response.send_message(
+        text,
+        ephemeral=True
+    )
+
 
 # =========================
-# /cancel（自分削除）
+# /cancel
 # =========================
-@bot.tree.command(name="cancel", description="自分の予約削除")
+class CancelSelect(discord.ui.Select):
+
+    def __init__(self, user_id):
+
+        self.user_id = user_id
+
+        options = []
+
+        for t in TYPES:
+
+            for slot, d in reservations[t].items():
+
+                if d["discord_id"] == user_id:
+
+                    options.append(
+                        discord.SelectOption(
+                            label=f"{t} {slot}",
+                            description=f"[{d['tag']}] {d['name']}",
+                            value=f"{t}|{slot}"
+                        )
+                    )
+
+        if not options:
+
+            options.append(
+                discord.SelectOption(
+                    label="予約なし",
+                    value="none"
+                )
+            )
+
+        super().__init__(
+            placeholder="削除する予約を選択",
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+
+        if self.values[0] == "none":
+
+            await interaction.response.send_message(
+                "削除できる予約がありません",
+                ephemeral=True
+            )
+            return
+
+        reserve_type, slot = self.values[0].split("|")
+
+        if slot in reservations[reserve_type]:
+
+            d = reservations[reserve_type][slot]
+
+            del reservations[reserve_type][slot]
+
+            save_data(reservations)
+
+            await interaction.response.send_message(
+                f"❌ 削除完了\n"
+                f"{reserve_type} {slot}\n"
+                f"[{d['tag']}] {d['name']}",
+                ephemeral=True
+            )
+
+
+class CancelView(discord.ui.View):
+
+    def __init__(self, user_id):
+
+        super().__init__(timeout=60)
+
+        self.add_item(CancelSelect(user_id))
+
+
+@bot.tree.command(name="cancel", description="予約削除")
 async def cancel(interaction: discord.Interaction):
 
-    uid = interaction.user.id
+    await interaction.response.send_message(
+        "削除する予約を選択してください",
+        view=CancelView(interaction.user.id),
+        ephemeral=True
+    )
 
-    for t in TYPES:
-        for slot, d in list(reservations[t].items()):
-
-            if d["discord_id"] == uid:
-
-                del reservations[t][slot]
-                save_data(reservations)
-
-                await interaction.response.send_message(
-                    f"❌ {slot} - [{d['tag']}] {d['name']} 削除",
-                    ephemeral=True
-                )
-                return
-
-    await interaction.response.send_message("予約なし", ephemeral=True)
 
 # =========================
-# /reset（管理者）
+# /reset
 # =========================
 @app_commands.choices(type=[
     app_commands.Choice(name="建築", value="建築"),
     app_commands.Choice(name="訓練", value="訓練"),
     app_commands.Choice(name="研究", value="研究"),
 ])
-@bot.tree.command(name="reset", description="管理者用リセット")
-async def reset(interaction: discord.Interaction, type: app_commands.Choice[str]):
+@bot.tree.command(name="reset", description="予約全削除（管理者専用）")
+async def reset(
+    interaction: discord.Interaction,
+    type: app_commands.Choice[str]
+):
 
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("権限なし", ephemeral=True)
+
+        await interaction.response.send_message(
+            "管理者のみ使用可能",
+            ephemeral=True
+        )
         return
 
-    reservations[type.value] = {}
+    reserve_type = type.value
+
+    reservations[reserve_type] = {}
+
     save_data(reservations)
 
     await interaction.response.send_message(
-        f"🔥 {type.value} リセット完了",
+        f"🔥 {reserve_type} を全リセットしました",
         ephemeral=True
     )
+
 
 # =========================
 # 起動
