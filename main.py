@@ -2,8 +2,8 @@ import os
 import json
 import discord
 from discord.ext import commands
-from discord import app_commands
 import logging
+from datetime import datetime, timedelta
 
 # =========================
 # ログ
@@ -25,16 +25,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DATA_FILE = "reservations.json"
 TYPES = ["建築", "訓練", "研究"]
 
+# 9:00〜翌8:30（30分刻み）
 TIME_SLOTS = []
 
-from datetime import datetime, timedelta
+start = datetime.strptime("09:00", "%H:%M")
+end = start + timedelta(days=1)
 
-current = datetime.strptime("09:00", "%H:%M")
-end = current + timedelta(days=1)
-
-while current < end:
-    TIME_SLOTS.append(current.strftime("%H:%M"))
-    current += timedelta(minutes=30)
+while start < end:
+    TIME_SLOTS.append(start.strftime("%H:%M"))
+    start += timedelta(minutes=30)
 
 
 def load_data():
@@ -60,19 +59,76 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user}")
 
 # =========================
-# /list（Choice + 全時間表示）
+# モーダル（予約入力）
 # =========================
-@app_commands.command(name="list", description="予約一覧")
-@app_commands.choices(type=[
-    app_commands.Choice(name="建築", value="建築"),
-    app_commands.Choice(name="訓練", value="訓練"),
-    app_commands.Choice(name="研究", value="研究"),
-])
-async def list_cmd(interaction: discord.Interaction, type: app_commands.Choice[str]):
+class YoyakuModal(discord.ui.Modal):
 
-    data = reservations[type.value]
+    def __init__(self, type_name: str):
+        super().__init__(title=f"{type_name} 予約")
+        self.type_name = type_name
 
-    text = f"【{type.value} 予約一覧】\n\n"
+    time = discord.ui.TextInput(label="時間（例 09:30）")
+    tag = discord.ui.TextInput(label="同盟タグ")
+    name = discord.ui.TextInput(label="名前")
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        t = self.time.value
+
+        if t in reservations[self.type_name]:
+            await interaction.response.send_message("その時間は予約済みです", ephemeral=True)
+            return
+
+        reservations[self.type_name][t] = {
+            "tag": self.tag.value,
+            "name": self.name.value,
+            "discord_id": interaction.user.id
+        }
+
+        save_data(reservations)
+
+        await interaction.response.send_message(
+            f"✅ {self.type_name} {t} 予約完了\n[{self.tag.value}] {self.name.value}",
+            ephemeral=True
+        )
+
+# =========================
+# /yoyaku（UI）
+# =========================
+class TypeView(discord.ui.View):
+
+    @discord.ui.button(label="建築", style=discord.ButtonStyle.primary)
+    async def b1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(YoyakuModal("建築"))
+
+    @discord.ui.button(label="訓練", style=discord.ButtonStyle.danger)
+    async def b2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(YoyakuModal("訓練"))
+
+    @discord.ui.button(label="研究", style=discord.ButtonStyle.success)
+    async def b3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(YoyakuModal("研究"))
+
+@bot.tree.command(name="yoyaku", description="予約作成")
+async def yoyaku(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "タイプを選んでください",
+        view=TypeView(),
+        ephemeral=True
+    )
+
+# =========================
+# /list（全時間表示）
+# =========================
+@bot.tree.command(name="list", description="予約一覧")
+async def list_cmd(interaction: discord.Interaction, type: str):
+
+    if type not in TYPES:
+        await interaction.response.send_message("建築/訓練/研究のみ", ephemeral=True)
+        return
+
+    data = reservations[type]
+    text = f"【{type} 予約一覧】\n\n"
 
     for slot in TIME_SLOTS:
         if slot in data:
@@ -81,14 +137,12 @@ async def list_cmd(interaction: discord.Interaction, type: app_commands.Choice[s
         else:
             text += f"🟢 {slot}\n"
 
-    await interaction.response.send_message(text, ephemeral=True)
-
-bot.tree.add_command(list_cmd)
+    await interaction.response.send_message(text, ephemeral=False)
 
 # =========================
 # /mylist（自分強調）
 # =========================
-@bot.tree.command(name="mylist", description="自分の予約一覧")
+@bot.tree.command(name="mylist", description="自分の予約")
 async def mylist(interaction: discord.Interaction):
 
     uid = interaction.user.id
@@ -105,82 +159,60 @@ async def mylist(interaction: discord.Interaction):
     await interaction.response.send_message(text, ephemeral=True)
 
 # =========================
-# /yoyaku（Choice）
+# /cancel（簡易削除）
 # =========================
-@app_commands.command(name="yoyaku", description="予約作成")
-@app_commands.choices(type=[
-    app_commands.Choice(name="建築", value="建築"),
-    app_commands.Choice(name="訓練", value="訓練"),
-    app_commands.Choice(name="研究", value="研究"),
-])
-async def yoyaku(interaction: discord.Interaction, type: app_commands.Choice[str]):
-
-    await interaction.response.send_message(
-        f"{type.value} を選択しました。\n"
-        "※ここは次ステップでモーダル入力に拡張可能",
-        ephemeral=True
-    )
-
-bot.tree.add_command(yoyaku)
-
-# =========================
-# /cancel（Choice削除）
-# =========================
-@app_commands.command(name="cancel", description="予約削除")
-@app_commands.choices(type=[
-    app_commands.Choice(name="建築", value="建築"),
-    app_commands.Choice(name="訓練", value="訓練"),
-    app_commands.Choice(name="研究", value="研究"),
-])
-async def cancel(interaction: discord.Interaction, type: app_commands.Choice[str]):
+@bot.tree.command(name="cancel", description="予約削除")
+async def cancel(interaction: discord.Interaction):
 
     uid = interaction.user.id
 
-    if type.value not in reservations:
-        await interaction.response.send_message("データなし", ephemeral=True)
-        return
+    for t in TYPES:
+        for slot, d in list(reservations[t].items()):
 
-    for slot, d in list(reservations[type.value].items()):
+            if d["discord_id"] == uid:
 
-        if d["discord_id"] == uid:
+                del reservations[t][slot]
+                save_data(reservations)
 
-            del reservations[type.value][slot]
-            save_data(reservations)
-
-            await interaction.response.send_message(
-                f"❌ {slot} - [{d['tag']}] {d['name']} 削除しました",
-                ephemeral=True
-            )
-            return
+                await interaction.response.send_message(
+                    f"❌ {slot} - [{d['tag']}] {d['name']} 削除",
+                    ephemeral=True
+                )
+                return
 
     await interaction.response.send_message("予約なし", ephemeral=True)
-
-bot.tree.add_command(cancel)
 
 # =========================
 # /reset（管理者）
 # =========================
-@app_commands.command(name="reset", description="全削除（管理者）")
-@app_commands.choices(type=[
-    app_commands.Choice(name="建築", value="建築"),
-    app_commands.Choice(name="訓練", value="訓練"),
-    app_commands.Choice(name="研究", value="研究"),
-])
-async def reset(interaction: discord.Interaction, type: app_commands.Choice[str]):
+class ResetView(discord.ui.View):
+
+    @discord.ui.button(label="建築", style=discord.ButtonStyle.primary)
+    async def b1(self, interaction, button):
+        reservations["建築"] = {}
+        save_data(reservations)
+        await interaction.response.send_message("建築リセット", ephemeral=True)
+
+    @discord.ui.button(label="訓練", style=discord.ButtonStyle.danger)
+    async def b2(self, interaction, button):
+        reservations["訓練"] = {}
+        save_data(reservations)
+        await interaction.response.send_message("訓練リセット", ephemeral=True)
+
+    @discord.ui.button(label="研究", style=discord.ButtonStyle.success)
+    async def b3(self, interaction, button):
+        reservations["研究"] = {}
+        save_data(reservations)
+        await interaction.response.send_message("研究リセット", ephemeral=True)
+
+@bot.tree.command(name="reset", description="管理者用リセット")
+async def reset(interaction: discord.Interaction):
 
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("権限なし", ephemeral=True)
         return
 
-    reservations[type.value] = {}
-    save_data(reservations)
-
-    await interaction.response.send_message(
-        f"🔥 {type.value} をリセットしました",
-        ephemeral=True
-    )
-
-bot.tree.add_command(reset)
+    await interaction.response.send_message("リセット対象選択", view=ResetView(), ephemeral=True)
 
 # =========================
 # 起動
