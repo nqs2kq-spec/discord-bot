@@ -38,7 +38,7 @@ COGS = [
     "cogs.utility",
     "cogs.fun",
     "cogs.help",
-    "cogs.reservations",
+    "cogs.reservation",
 ]
 
 
