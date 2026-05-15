@@ -6,7 +6,7 @@ class Reservation(commands.Cog):
 
     @commands.command()
     async def test(self, ctx):
-        await ctx.send("cog動いてるよ")
+        await ctx.send("Cog動いてる")
 
 async def setup(bot):
     await bot.add_cog(Reservation(bot))
