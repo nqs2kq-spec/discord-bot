@@ -43,6 +43,7 @@ while start < end:
 def load_data():
 
     if not os.path.exists(DATA_FILE):
+
         data = {t: {} for t in TYPES}
 
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -84,7 +85,7 @@ async def on_ready():
     type="建築 / 訓練 / 研究",
     game_account_name="ゲーム内名前",
     alliance_tag="同盟タグ",
-    reserve_time="予約時間（例 09:30）"
+    reserve_time="予約時間（例 9:30）"
 )
 @app_commands.choices(type=[
     app_commands.Choice(name="建築", value="建築"),
@@ -102,7 +103,25 @@ async def yoyaku(
 
     reserve_type = type.value
 
-    # 時間チェック
+    # =========================
+    # 時間整形
+    # =========================
+    try:
+
+        h, m = reserve_time.split(":")
+        reserve_time = f"{int(h):02}:{int(m):02}"
+
+    except:
+
+        await interaction.response.send_message(
+            "時間は 9:00 / 09:00 / 21:30 の形式で入力してください",
+            ephemeral=True
+        )
+        return
+
+    # =========================
+    # 時間範囲チェック
+    # =========================
     if reserve_time not in TIME_SLOTS:
 
         await interaction.response.send_message(
@@ -111,7 +130,9 @@ async def yoyaku(
         )
         return
 
+    # =========================
     # 同タイプ重複防止
+    # =========================
     for slot, d in reservations[reserve_type].items():
 
         if d["discord_id"] == interaction.user.id:
@@ -122,7 +143,9 @@ async def yoyaku(
             )
             return
 
+    # =========================
     # 時間重複防止
+    # =========================
     if reserve_time in reservations[reserve_type]:
 
         d = reservations[reserve_type][reserve_time]
@@ -134,7 +157,9 @@ async def yoyaku(
         )
         return
 
+    # =========================
     # 登録
+    # =========================
     reservations[reserve_type][reserve_time] = {
         "name": game_account_name,
         "tag": alliance_tag,
@@ -171,17 +196,20 @@ async def list_cmd(
 
     for slot in TIME_SLOTS:
 
+        display_slot = slot.lstrip("0")
+
         if slot in reservations[reserve_type]:
 
             d = reservations[reserve_type][slot]
 
             text += (
-                f"❌ {slot} - "
+                f"❌ {display_slot} - "
                 f"[{d['tag']}] {d['name']}\n"
             )
 
         else:
-            text += f"🟢 {slot}\n"
+
+            text += f"🟢 {display_slot}\n"
 
     await interaction.response.send_message(
         text,
@@ -213,9 +241,11 @@ async def mylist(interaction: discord.Interaction):
 
             if d["discord_id"] == uid:
 
+                display_slot = slot.lstrip("0")
+
                 text += (
                     f"{icons[t]} "
-                    f"{t} {slot} - "
+                    f"{t} {display_slot} - "
                     f"[{d['tag']}] {d['name']}\n"
                 )
 
@@ -237,8 +267,6 @@ class CancelSelect(discord.ui.Select):
 
     def __init__(self, user_id):
 
-        self.user_id = user_id
-
         options = []
 
         for t in TYPES:
@@ -247,9 +275,11 @@ class CancelSelect(discord.ui.Select):
 
                 if d["discord_id"] == user_id:
 
+                    display_slot = slot.lstrip("0")
+
                     options.append(
                         discord.SelectOption(
-                            label=f"{t} {slot}",
+                            label=f"{t} {display_slot}",
                             description=f"[{d['tag']}] {d['name']}",
                             value=f"{t}|{slot}"
                         )
@@ -289,9 +319,11 @@ class CancelSelect(discord.ui.Select):
 
             save_data(reservations)
 
+            display_slot = slot.lstrip("0")
+
             await interaction.response.send_message(
                 f"❌ 削除完了\n"
-                f"{reserve_type} {slot}\n"
+                f"{reserve_type} {display_slot}\n"
                 f"[{d['tag']}] {d['name']}",
                 ephemeral=True
             )
