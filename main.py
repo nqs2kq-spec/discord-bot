@@ -1,4 +1,9 @@
 import os
+import sys
+
+print("CWD:", os.getcwd())
+print("FILES:", os.listdir())
+
 import discord
 from discord.ext import commands
 import logging
